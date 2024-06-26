@@ -31,18 +31,3 @@ export async function signOut() {
   cookies().delete("pb_auth");
   redirect("/login");
 }
-
-export async function getAuthenticatedUser() {
-  const cookieStore = cookies();
-  const pb = createServerClient(cookieStore);
-  const token = cookieStore.get("pb_auth");
-
-  if (!token) return null;
-
-  try {
-    pb.authStore.save(JSON.parse(token.value));
-    return pb.authStore.model;
-  } catch {
-    return null;
-  }
-}

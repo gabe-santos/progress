@@ -2,7 +2,7 @@ import parse from "html-react-parser";
 import { addLog } from "./actions";
 import { createServerClient } from "./lib/pocketbase";
 import { redirect } from "next/navigation";
-import { getAuthenticatedUser, signOut } from "./lib/auth";
+import { signOut } from "./lib/auth";
 import { cookies } from "next/headers";
 
 export const revalidate = 0;
@@ -10,12 +10,13 @@ export const revalidate = 0;
 export default async function Home() {
   const cookieStore = cookies();
   const pb = createServerClient(cookieStore);
-  const user = await getAuthenticatedUser();
 
   if (!pb.authStore.isValid) {
     console.log("no user detected");
     redirect("/login");
   }
+
+  const user = pb.authStore.model?.name;
 
   const records = await pb.collection("logs").getFullList({
     sort: "-created",
@@ -26,7 +27,7 @@ export default async function Home() {
       <form action={signOut}>
         <button type="submit">Sign Out</button>
       </form>
-      {/* <h1>Welcome {user.name}</h1> */}
+      <h1>Welcome {user}</h1>
       <form action={addLog}>
         <input type="text" name="log" />
         <button>submit</button>
