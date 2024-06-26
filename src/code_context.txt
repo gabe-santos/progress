@@ -1,0 +1,375 @@
+// File: app/actions.ts
+"use server";
+import { revalidatePath } from "next/cache";
+import { createServerClient } from "./lib/pocketbase";
+import { cookies } from "next/headers";
+
+const cookieStore = cookies();
+
+const pb = createServerClient(cookieStore);
+
+export async function addLog(formData: FormData) {
+  const newLog = {
+    body: formData.get("log"),
+  };
+  await pb.collection("logs").create(newLog);
+
+  revalidatePath("/");
+}
+
+// File: app/globals.css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Andy Bell's CSS Reset */
+/* https://piccalil.li/blog/a-more-modern-css-reset/ */
+
+/* Box sizing rules */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Prevent font size inflation */
+html {
+  -moz-text-size-adjust: none;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+}
+
+/* Remove default margin in favour of better control in authored CSS */
+body,
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+blockquote,
+dl,
+dd {
+  margin-block-end: 0;
+}
+
+/* Remove list styles on ul, ol elements with a list role, which suggests default styling will be removed */
+ul[role="list"],
+ol[role="list"] {
+  list-style: none;
+}
+
+/* Set core body defaults */
+body {
+  min-height: 100vh;
+  line-height: 1.5;
+}
+
+/* Set shorter line heights on headings and interactive elements */
+h1,
+h2,
+h3,
+h4,
+button,
+input,
+label {
+  line-height: 1.1;
+}
+
+/* Balance text wrapping on headings */
+h1,
+h2,
+h3,
+h4 {
+  text-wrap: balance;
+}
+
+/* A elements that don't have a class get default styles */
+a:not([class]) {
+  text-decoration-skip-ink: auto;
+  color: currentColor;
+}
+
+/* Make images easier to work with */
+img,
+picture {
+  max-width: 100%;
+  display: block;
+}
+
+/* Inherit fonts for inputs and buttons */
+input,
+button,
+textarea,
+select {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* Make sure textareas without a rows attribute are not tiny */
+textarea:not([rows]) {
+  min-height: 10em;
+}
+
+/* Anything that has been anchored to should have extra scroll margin */
+:target {
+  scroll-margin-block: 5ex;
+}
+
+// File: app/layout.tsx
+import type { Metadata } from "next";
+import { IBM_Plex_Sans } from "next/font/google";
+import "./globals.css";
+
+const ibm_plex_sans = IBM_Plex_Sans({
+  subsets: ["latin"],
+  weight: ["100", "200", "300", "400", "500", "600", "700"],
+});
+
+export const metadata: Metadata = {
+  title: "Progress",
+  description: "Track your progress",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en">
+      <body className={ibm_plex_sans.className}>{children}</body>
+    </html>
+  );
+}
+
+// File: app/lib/auth.ts
+"use server";
+
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { createServerClient } from "./pocketbase";
+
+export async function signIn(formData: FormData) {
+  const pb = createServerClient();
+  const email = formData.get("email") as string;
+  const password = formData.get("password") as string;
+
+  const authData = await pb
+    .collection("users")
+    .authWithPassword(email, password);
+
+  console.log("Authentication successful:", authData);
+
+  // Store the token in a secure HTTP-only cookie
+  cookies().set("pb_auth", JSON.stringify(authData.token), {
+    secure: true,
+    path: "/",
+    sameSite: "strict",
+    httpOnly: true,
+  });
+  redirect("/");
+}
+
+export async function signOut() {
+  cookies().delete("pb_auth");
+}
+
+export async function getAuthenticatedUser() {
+  const cookieStore = cookies();
+  const pb = createServerClient(cookieStore);
+  const token = cookieStore.get("pb_auth");
+
+  if (!token) return null;
+
+  try {
+    pb.authStore.save(JSON.parse(token.value));
+    return pb.authStore.model;
+  } catch {
+    return null;
+  }
+}
+
+// File: app/lib/pocketbase.ts
+import { TypedPocketBase } from "@/types/pocketbase-types";
+import { ReadonlyRequestCookies } from "next/dist/server/web/spec-extension/adapters/request-cookies";
+import PocketBase from "pocketbase";
+
+export function createServerClient(cookieStore?: ReadonlyRequestCookies) {
+  if (!process.env.NEXT_PUBLIC_POCKETBASE_API_URL) {
+    throw new Error("Pocketbase API url not defined !");
+  }
+
+  if (typeof window !== "undefined") {
+    throw new Error(
+      "This method is only supposed to call from the Server environment",
+    );
+  }
+
+  const client = new PocketBase(
+    process.env.NEXT_PUBLIC_POCKETBASE_API_URL,
+  ) as TypedPocketBase;
+
+  if (cookieStore) {
+    const authCookie = cookieStore.get("pb_auth");
+
+    if (authCookie) {
+      client.authStore.loadFromCookie(`${authCookie.name}=${authCookie.value}`);
+    }
+  }
+
+  return client;
+}
+
+let singletonClient: TypedPocketBase | null = null;
+
+export function createBrowserClient() {
+  if (!process.env.NEXT_PUBLIC_POCKETBASE_API_URL) {
+    throw new Error("Pocketbase API url not defined !");
+  }
+
+  const createNewClient = () => {
+    return new PocketBase(
+      process.env.NEXT_PUBLIC_POCKETBASE_API_URL,
+    ) as TypedPocketBase;
+  };
+
+  const _singletonClient = singletonClient ?? createNewClient();
+
+  if (typeof window === "undefined") return _singletonClient;
+
+  if (!singletonClient) singletonClient = _singletonClient;
+
+  singletonClient.authStore.onChange(() => {
+    document.cookie = singletonClient!.authStore.exportToCookie({
+      httpOnly: false,
+    });
+  });
+
+  return singletonClient;
+}
+
+// File: app/login/page.tsx
+import { signIn } from "../lib/auth";
+
+export default function Login() {
+  return (
+    <main className="flex flex-col justify-center">
+      <div className="border">
+        <form action={signIn}>
+          <input type="text" name="email" className="border" />
+          <input type="password" name="password" className="border" />
+          <button type="submit">submit</button>
+        </form>
+      </div>
+    </main>
+  );
+}
+
+// File: app/page.tsx
+import parse from "html-react-parser";
+import { addLog } from "./actions";
+import { createServerClient } from "./lib/pocketbase";
+import { redirect } from "next/navigation";
+import { getAuthenticatedUser, signOut } from "./lib/auth";
+import { cookies } from "next/headers";
+
+export const revalidate = 0;
+
+export default async function Home() {
+  const cookieStore = cookies();
+  const pb = createServerClient(cookieStore);
+  const user = await getAuthenticatedUser();
+
+  if (!user) {
+    console.log("no user detected");
+    console.log(user);
+    redirect("/login");
+  }
+
+  const records = await pb.collection("logs").getFullList({
+    sort: "-created",
+  });
+
+  return (
+    <div className="flex flex-col gap-8">
+      <button onClick={signOut}>Sign Out</button>
+      {/* <h1>Welcome {user.name}</h1> */}
+      <form action={addLog}>
+        <input type="text" name="log" />
+        <button>submit</button>
+      </form>
+      {records.map((r) => {
+        return (
+          <div key={r.id}>
+            {new Date(r.created).toLocaleString()}
+            {parse(r.body)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// File: types/pocketbase-types.ts
+/**
+ * This file was @generated using pocketbase-typegen
+ */
+
+import type PocketBase from "pocketbase";
+import type { RecordService } from "pocketbase";
+
+export enum Collections {
+  Users = "users",
+}
+
+// Alias types for improved usability
+export type IsoDateString = string;
+export type RecordIdString = string;
+export type HTMLString = string;
+
+// System fields
+export type BaseSystemFields<T = never> = {
+  id: RecordIdString;
+  created: IsoDateString;
+  updated: IsoDateString;
+  collectionId: string;
+  collectionName: Collections;
+  expand?: T;
+};
+
+export type AuthSystemFields<T = never> = {
+  email: string;
+  emailVisibility: boolean;
+  username: string;
+  verified: boolean;
+} & BaseSystemFields<T>;
+
+// Record types for each collection
+
+export type UsersRecord = {
+  avatar?: string;
+  name?: string;
+};
+
+// Response types include system fields and match responses from the PocketBase API
+export type UsersResponse<Texpand = unknown> = Required<UsersRecord> &
+  AuthSystemFields<Texpand>;
+
+// Types containing all Records and Responses, useful for creating typing helper functions
+
+export type CollectionRecords = {
+  users: UsersRecord;
+};
+
+export type CollectionResponses = {
+  users: UsersResponse;
+};
+
+// Type for usage with type asserted PocketBase instance
+// https://github.com/pocketbase/js-sdk#specify-typescript-definitions
+
+export type TypedPocketBase = PocketBase & {
+  collection(idOrName: "users"): RecordService<UsersResponse>;
+};
+
